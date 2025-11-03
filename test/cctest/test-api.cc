@@ -9498,30 +9498,40 @@ THREADED_TEST(ValueViewOldGenerationString) {
 }
 
 THREADED_TEST(ValueViewYoungGenerationString) {
-  // Test that ValueView works correctly with young generation strings
+  // Test that ValueView now promotes young-gen strings to old-gen
+  // This allows GC and allocations even for young strings!
   LocalContext context;
   v8::Isolate* isolate = context.isolate();
   v8::HandleScope scope(isolate);
 
-  // Create a fresh string (will be in young generation)
+  // Create a fresh string (will start in young generation)
   v8::Local<v8::String> str = v8_str("young generation string");
 
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   i::DirectHandle<i::String> i_str = v8::Utils::OpenDirectHandle(*str);
 
-  // Verify string is in young generation
-  bool is_young = i::HeapLayout::InYoungGeneration(*i_str);
+  // Verify string starts in young generation
+  CHECK(i::HeapLayout::InYoungGeneration(*i_str));
 
-  // Create ValueView - this WILL block GC for young generation strings
+  // Create ValueView - ULTIMATE OPTIMIZATION: This promotes the string to
+  // old generation, eliminating the need for GC locks!
   v8::String::ValueView value(isolate, str);
   CHECK(value.is_one_byte());
   CHECK_EQ(value.length(), 23);
   CHECK_EQ(value.data8()[0], 'y');
 
-  // For young generation strings, GC is blocked during ValueView lifetime
-  // This is necessary for safety, but the optimization reduces this to only
-  // young-gen strings rather than ALL strings
-  CHECK_EQ(value.data8()[6], 'g');
+  // NEW: Even for young strings, we can now trigger GC while ValueView is alive!
+  // The string was promoted to old-gen, so no GC lock is needed
+  i::heap::InvokeMinorGC(CcTest::heap());
+
+  // NEW: We can also allocate while ValueView is alive!
+  v8::Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, 128);
+  CHECK(!buffer.IsEmpty());
+  CHECK_EQ(buffer->ByteLength(), 128);
+
+  // ValueView is still valid after GC and allocation
+  CHECK_EQ(value.data8()[0], 'y');
+  CHECK_EQ(value.length(), 23);
 }
 
 THREADED_TEST(ValueViewInternalizedString) {

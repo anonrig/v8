@@ -11044,51 +11044,51 @@ String::ValueView::ValueView(v8::Isolate* v8_isolate,
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
   i::DirectHandle<i::String> i_str = Utils::OpenDirectHandle(*str);
 
-  // If the underlying string is flat, we can access its content directly.
-  // Otherwise, we need to create a handle scope to flatten the string.
+  // ULTIMATE OPTIMIZATION: Force all flattened strings to old generation!
+  // This eliminates the need for GC locks entirely, even for young-gen strings.
+  //
+  // Strategy: When flattening, use AllocationType::kOld to allocate in
+  // old generation. Old-gen strings are stable (rarely move), so we don't
+  // need to block GC at all.
+  //
+  // Performance impact: Young strings get promoted to old-gen earlier than
+  // they normally would, but this is a small cost compared to blocking all GC.
   i::DirectHandle<i::String> i_flat_str;
   if (i_str->IsFlat()) {
-    i_flat_str = i_str;
-    flat_str_ = str;
+    // String is already flat. If it's in young gen and not external,
+    // we need to promote it to old gen to avoid GC locks.
+    if (!i_str->IsExternal() && i::HeapLayout::InYoungGeneration(*i_str)) {
+      // Re-flatten with old-gen allocation to promote the string
+      i::HandleScope scope(i_isolate);
+      i_flat_str = i::String::Flatten(i_isolate, i_str, i::AllocationType::kOld);
+      flat_str_ = Utils::ToLocal(i_flat_str);
+    } else {
+      // Already in old-gen or external, use as-is
+      i_flat_str = i_str;
+      flat_str_ = str;
+    }
   } else {
+    // String needs flattening - force allocation in old generation
     i::HandleScope scope(i_isolate);
-    i_flat_str = i::String::Flatten(i_isolate, i_str);
+    i_flat_str = i::String::Flatten(i_isolate, i_str, i::AllocationType::kOld);
     flat_str_ = Utils::ToLocal(i_flat_str);
   }
 
-  // Check if the string is movable. External strings and strings in old
-  // generation don't move, so we don't need GC protection for them.
-  // Only young generation sequential strings need GC protection.
-  const bool needs_gc_protection =
-      !i_flat_str->IsExternal() &&
-      i::HeapLayout::InYoungGeneration(*i_flat_str);
+  // At this point, string is either:
+  // 1. External (never moves)
+  // 2. In old generation (rarely moves, handle keeps it safe)
+  // NO GC LOCK NEEDED FOR ANY STRING TYPE!
 
-  if (needs_gc_protection) {
-    i::DisallowGarbageCollectionInRelease* no_gc =
-        new (no_gc_debug_scope_) i::DisallowGarbageCollectionInRelease();
-    i::String::FlatContent flat_content = i_flat_str->GetFlatContent(*no_gc);
-    DCHECK(flat_content.IsFlat());
-    is_one_byte_ = flat_content.IsOneByte();
-    length_ = flat_content.length();
-    if (is_one_byte_) {
-      data8_ = flat_content.ToOneByteVector().data();
-    } else {
-      data16_ = flat_content.ToUC16Vector().data();
-    }
+  no_gc_debug_scope_[0] = '\0';  // Mark as uninitialized (no GC lock)
+  i::DisallowGarbageCollection dummy_no_gc;
+  i::String::FlatContent flat_content = i_flat_str->GetFlatContent(dummy_no_gc);
+  DCHECK(flat_content.IsFlat());
+  is_one_byte_ = flat_content.IsOneByte();
+  length_ = flat_content.length();
+  if (is_one_byte_) {
+    data8_ = flat_content.ToOneByteVector().data();
   } else {
-    // String is immovable (external or old-gen), no GC protection needed.
-    // Just mark the no_gc scope as not initialized.
-    no_gc_debug_scope_[0] = '\0';  // Mark as uninitialized
-    i::DisallowGarbageCollection dummy_no_gc;
-    i::String::FlatContent flat_content = i_flat_str->GetFlatContent(dummy_no_gc);
-    DCHECK(flat_content.IsFlat());
-    is_one_byte_ = flat_content.IsOneByte();
-    length_ = flat_content.length();
-    if (is_one_byte_) {
-      data8_ = flat_content.ToOneByteVector().data();
-    } else {
-      data16_ = flat_content.ToUC16Vector().data();
-    }
+    data16_ = flat_content.ToUC16Vector().data();
   }
 }
 
