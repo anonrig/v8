@@ -642,22 +642,22 @@ class V8_EXPORT String : public Name {
   /**
    * Returns a view onto a string's contents.
    *
-   * This is a zero-copy view that provides direct access to string data without
-   * blocking garbage collection or allocations.
+   * This is a zero-copy view that provides direct access to string data.
    *
-   * OPTIMIZATION: ValueView aggressively promotes young generation strings to
-   * old generation to eliminate GC locks entirely. This means:
-   * - External strings: Used as-is (never move)
-   * - Old generation strings: Used as-is (stable, rarely move)
-   * - Young generation strings: Promoted to old generation before viewing
+   * OPTIMIZATION: ValueView selectively avoids GC locks based on string type:
+   * - External strings: No GC lock (data is outside V8 heap, never moves)
+   * - Old generation strings: No GC lock (stable, rarely move)
+   * - Young generation strings: GC lock applied (can move during minor GC)
    *
-   * Result: NO GC BLOCKING for any string type! You can:
+   * This means for external and old-generation strings (the common case), you can:
    * - Trigger garbage collection while ValueView is alive ✓
    * - Allocate new objects (ArrayBuffers, etc.) while using ValueView ✓
-   * - Use ValueView in performance-critical paths without GC pauses ✓
+   * - Use ValueView without any GC pauses ✓
    *
-   * The only cost is that young strings are promoted earlier than they normally
-   * would be, which is a small price for eliminating all GC blocking.
+   * For young generation strings (the rare case), GC is temporarily blocked to
+   * prevent the string from moving. This is necessary for safety but is a
+   * significant improvement over the previous behavior that blocked GC for ALL
+   * strings regardless of type.
    *
    * V8 strings are either encoded as one-byte or two-bytes per character.
    */
