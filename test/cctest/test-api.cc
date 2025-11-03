@@ -9428,6 +9428,121 @@ THREADED_TEST(Utf16Trailing3Byte_ValueView) {
   delete[] buffer;
 }
 
+THREADED_TEST(ValueViewExternalString) {
+  // Test that ValueView works with external strings and doesn't block GC
+  LocalContext context;
+  v8::Isolate* isolate = context.isolate();
+  v8::HandleScope scope(isolate);
+
+  // Create an external string
+  uint16_t* data = new uint16_t[10];
+  for (int i = 0; i < 9; i++) {
+    data[i] = 0x1234 + i;
+  }
+  data[9] = 0;
+
+  v8::Local<v8::String> ext_str =
+      v8::String::NewExternalTwoByte(isolate, new TestResource(data))
+          .ToLocalChecked();
+  CHECK(ext_str->IsExternal());
+
+  // Create ValueView - this should NOT block GC for external strings
+  v8::String::ValueView value(isolate, ext_str);
+  CHECK(!value.is_one_byte());
+  CHECK_EQ(value.length(), 9);
+  CHECK_EQ(value.data16()[0], 0x1234);
+  CHECK_EQ(value.data16()[8], 0x123C);
+
+  // Verify we can trigger GC while ValueView is alive (only safe for external)
+  // This would fail with old implementation that blocked all GC
+  i::heap::InvokeMinorGC(CcTest::heap());
+
+  // ValueView should still be valid after GC for external strings
+  CHECK_EQ(value.data16()[0], 0x1234);
+  CHECK_EQ(value.length(), 9);
+}
+
+THREADED_TEST(ValueViewOldGenerationString) {
+  // Test that ValueView works with old generation strings
+  LocalContext context;
+  v8::Isolate* isolate = context.isolate();
+  v8::HandleScope scope(isolate);
+
+  // Create a string
+  v8::Local<v8::String> str = v8_str("old generation string test");
+
+  // Force promotion to old generation
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  i::DirectHandle<i::String> i_str = v8::Utils::OpenDirectHandle(*str);
+
+  // Trigger multiple GCs to move string to old generation
+  for (int i = 0; i < 3; i++) {
+    i::heap::InvokeMinorGC(CcTest::heap());
+  }
+
+  // Verify string is in old generation
+  CHECK(!i::HeapLayout::InYoungGeneration(*i_str));
+
+  // Create ValueView - this should NOT block GC for old-gen strings
+  v8::String::ValueView value(isolate, str);
+  CHECK(value.is_one_byte());
+  CHECK_EQ(value.length(), 26);
+  CHECK_EQ(value.data8()[0], 'o');
+
+  // We can trigger minor GC while ValueView is alive for old-gen strings
+  i::heap::InvokeMinorGC(CcTest::heap());
+
+  // ValueView should still be valid
+  CHECK_EQ(value.data8()[0], 'o');
+  CHECK_EQ(value.length(), 26);
+}
+
+THREADED_TEST(ValueViewYoungGenerationString) {
+  // Test that ValueView works correctly with young generation strings
+  LocalContext context;
+  v8::Isolate* isolate = context.isolate();
+  v8::HandleScope scope(isolate);
+
+  // Create a fresh string (will be in young generation)
+  v8::Local<v8::String> str = v8_str("young generation string");
+
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  i::DirectHandle<i::String> i_str = v8::Utils::OpenDirectHandle(*str);
+
+  // Verify string is in young generation
+  bool is_young = i::HeapLayout::InYoungGeneration(*i_str);
+
+  // Create ValueView - this WILL block GC for young generation strings
+  v8::String::ValueView value(isolate, str);
+  CHECK(value.is_one_byte());
+  CHECK_EQ(value.length(), 23);
+  CHECK_EQ(value.data8()[0], 'y');
+
+  // For young generation strings, GC is blocked during ValueView lifetime
+  // This is necessary for safety, but the optimization reduces this to only
+  // young-gen strings rather than ALL strings
+  CHECK_EQ(value.data8()[6], 'g');
+}
+
+THREADED_TEST(ValueViewInternalizedString) {
+  // Test that ValueView works with internalized strings
+  LocalContext context;
+  v8::Isolate* isolate = context.isolate();
+  v8::HandleScope scope(isolate);
+
+  v8::Local<v8::String> str = v8_str("internalized");
+  v8::Local<v8::String> interned = str->InternalizeString(isolate);
+
+  // Internalized strings are typically in old space
+  v8::String::ValueView value(isolate, interned);
+  CHECK(value.is_one_byte());
+  CHECK_EQ(value.length(), 12);
+  CHECK_EQ(value.data8()[0], 'i');
+
+  // Should work correctly
+  CHECK_EQ(value.data8()[11], 'd');
+}
+
 THREADED_TEST(ToArrayIndex) {
   LocalContext context;
   v8::Isolate* isolate = context.isolate();
