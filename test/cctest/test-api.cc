@@ -9621,6 +9621,58 @@ THREADED_TEST(ValueViewAllowsAllocationForOldGenStrings) {
   CHECK(value.is_one_byte());
 }
 
+THREADED_TEST(ValueViewMultipleAccessesNoReflatten) {
+  // Test that creating multiple ValueViews on the same string doesn't
+  // cause re-flattening. First access flattens, subsequent are free.
+  LocalContext context;
+  v8::Isolate* isolate = context.isolate();
+  v8::HandleScope scope(isolate);
+
+  // Create a ConsString that needs flattening
+  v8::Local<v8::String> left = v8_str("Hello ");
+  v8::Local<v8::String> right = v8_str("World!");
+  v8::Local<v8::String> cons = v8::String::Concat(isolate, left, right);
+
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  i::DirectHandle<i::String> i_cons = v8::Utils::OpenDirectHandle(*cons);
+
+  // Verify it starts as a ConsString
+  CHECK(!i_cons->IsFlat());
+
+  // First ValueView - this flattens the ConsString (one-time cost)
+  {
+    v8::String::ValueView view1(isolate, cons);
+    CHECK(view1.is_one_byte());
+    CHECK_EQ(view1.length(), 12);
+    CHECK_EQ(view1.data8()[0], 'H');
+    CHECK_EQ(view1.data8()[11], '!');
+  }
+
+  // Verify string is now flat (in-place flattening)
+  CHECK(i_cons->IsFlat());
+
+  // Second ValueView - should NOT re-flatten (IsFlat() shortcut at line 953)
+  {
+    v8::String::ValueView view2(isolate, cons);
+    CHECK(view2.is_one_byte());
+    CHECK_EQ(view2.length(), 12);
+    CHECK_EQ(view2.data8()[0], 'H');
+  }
+
+  // Third ValueView - also free, no flattening
+  {
+    v8::String::ValueView view3(isolate, cons);
+    CHECK(view3.is_one_byte());
+    CHECK_EQ(view3.length(), 12);
+  }
+
+  // Multiple ValueViews can exist simultaneously on the same string
+  v8::String::ValueView view4(isolate, cons);
+  v8::String::ValueView view5(isolate, cons);
+  CHECK_EQ(view4.data8()[0], 'H');
+  CHECK_EQ(view5.data8()[0], 'H');
+}
+
 THREADED_TEST(ToArrayIndex) {
   LocalContext context;
   v8::Isolate* isolate = context.isolate();
