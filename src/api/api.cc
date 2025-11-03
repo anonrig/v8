@@ -11046,11 +11046,28 @@ String::ValueView::ValueView(v8::Isolate* v8_isolate,
 
   // If the underlying string is flat, we can access its content directly.
   // Otherwise, we need to create a handle scope to flatten the string.
+  i::DirectHandle<i::String> i_flat_str;
   if (i_str->IsFlat()) {
+    i_flat_str = i_str;
+    flat_str_ = str;
+  } else {
+    i::HandleScope scope(i_isolate);
+    i_flat_str = i::String::Flatten(i_isolate, i_str);
+    flat_str_ = Utils::ToLocal(i_flat_str);
+  }
+
+  // Check if the string is movable. External strings and strings in old
+  // generation don't move, so we don't need GC protection for them.
+  // Only young generation sequential strings need GC protection.
+  const bool needs_gc_protection =
+      !i_flat_str->IsExternal() &&
+      i::HeapLayout::InYoungGeneration(*i_flat_str);
+
+  if (needs_gc_protection) {
     i::DisallowGarbageCollectionInRelease* no_gc =
         new (no_gc_debug_scope_) i::DisallowGarbageCollectionInRelease();
-    i::String::FlatContent flat_content = i_str->GetFlatContent(*no_gc);
-    flat_str_ = str;
+    i::String::FlatContent flat_content = i_flat_str->GetFlatContent(*no_gc);
+    DCHECK(flat_content.IsFlat());
     is_one_byte_ = flat_content.IsOneByte();
     length_ = flat_content.length();
     if (is_one_byte_) {
@@ -11059,13 +11076,11 @@ String::ValueView::ValueView(v8::Isolate* v8_isolate,
       data16_ = flat_content.ToUC16Vector().data();
     }
   } else {
-    i::HandleScope scope(i_isolate);
-    i::DirectHandle<i::String> i_flat_str =
-        i::String::Flatten(i_isolate, i_str);
-    flat_str_ = Utils::ToLocal(i_flat_str);
-    i::DisallowGarbageCollectionInRelease* no_gc =
-        new (no_gc_debug_scope_) i::DisallowGarbageCollectionInRelease();
-    i::String::FlatContent flat_content = i_flat_str->GetFlatContent(*no_gc);
+    // String is immovable (external or old-gen), no GC protection needed.
+    // Just mark the no_gc scope as not initialized.
+    no_gc_debug_scope_[0] = '\0';  // Mark as uninitialized
+    i::DisallowGarbageCollection dummy_no_gc;
+    i::String::FlatContent flat_content = i_flat_str->GetFlatContent(dummy_no_gc);
     DCHECK(flat_content.IsFlat());
     is_one_byte_ = flat_content.IsOneByte();
     length_ = flat_content.length();
@@ -11079,9 +11094,12 @@ String::ValueView::ValueView(v8::Isolate* v8_isolate,
 
 String::ValueView::~ValueView() {
   using i::DisallowGarbageCollectionInRelease;
-  DisallowGarbageCollectionInRelease* no_gc =
-      reinterpret_cast<DisallowGarbageCollectionInRelease*>(no_gc_debug_scope_);
-  no_gc->~DisallowGarbageCollectionInRelease();
+  // Check if GC scope was initialized (not marked as uninitialized)
+  if (no_gc_debug_scope_[0] != '\0') {
+    DisallowGarbageCollectionInRelease* no_gc =
+        reinterpret_cast<DisallowGarbageCollectionInRelease*>(no_gc_debug_scope_);
+    no_gc->~DisallowGarbageCollectionInRelease();
+  }
 }
 
 void String::ValueView::CheckOneByte(bool is_one_byte) const {

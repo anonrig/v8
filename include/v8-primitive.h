@@ -643,9 +643,13 @@ class V8_EXPORT String : public Name {
    * Returns a view onto a string's contents.
    *
    * WARNING: This does not copy the string's contents, and will therefore be
-   * invalidated if the GC can move the string while the ValueView is alive. It
-   * is therefore required that no GC or allocation can happen while there is an
-   * active ValueView. This requirement may be relaxed in the future.
+   * invalidated if the GC can move the string while the ValueView is alive.
+   *
+   * OPTIMIZATION: For external strings and strings in old generation, GC is
+   * allowed during ValueView lifetime as these strings are immovable or stable.
+   * For young generation strings, GC is blocked to prevent the string from
+   * being moved. This means ValueView is safe to use but may temporarily pause
+   * GC for newly created strings.
    *
    * V8 strings are either encoded as one-byte or two-bytes per character.
    */
