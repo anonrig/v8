@@ -11059,19 +11059,24 @@ String::ValueView::ValueView(v8::Isolate* v8_isolate,
     flat_str_ = Utils::ToLocal(i_flat_str);
   }
 
-  // OPTIMIZATION: Conditional GC protection based on string location.
-  // - External strings: Never move (data is outside V8 heap) → No GC lock
-  // - Old generation strings: Rarely move (only during major GC) → No GC lock
-  // - Young generation strings: Can move during minor GC → Need GC lock
+  // OPTIMIZATION: Only external strings are safe without GC protection.
+  // External string data lives outside the V8 heap and never moves.
   //
-  // This eliminates GC blocking for external and old-gen strings (common case)
-  // while maintaining safety for young-gen strings (rare case).
-  const bool needs_gc_protection =
-      !i_flat_str->IsExternal() &&
-      i::HeapLayout::InYoungGeneration(*i_flat_str);
+  // All heap-allocated strings (both young-gen and old-gen) require GC
+  // protection because:
+  // - Young-gen strings can move during minor GC (scavenge)
+  // - Old-gen strings can move during major GC (mark-compact)
+  //
+  // Since ValueView holds raw pointers to string data, any GC that moves
+  // the string would invalidate the pointer. Handles are updated by GC,
+  // but raw pointers are not.
+  //
+  // This conservative approach eliminates GC blocking ONLY for external
+  // strings, which is still a significant win for embedders.
+  const bool needs_gc_protection = !i_flat_str->IsExternal();
 
   if (needs_gc_protection) {
-    // Young generation string - must block GC to prevent movement
+    // Heap string - must block GC to prevent movement
     i::DisallowGarbageCollectionInRelease* no_gc =
         new (no_gc_debug_scope_) i::DisallowGarbageCollectionInRelease();
     i::String::FlatContent flat_content = i_flat_str->GetFlatContent(*no_gc);
@@ -11084,7 +11089,8 @@ String::ValueView::ValueView(v8::Isolate* v8_isolate,
       data16_ = flat_content.ToUC16Vector().data();
     }
   } else {
-    // External or old-gen string - no GC protection needed!
+    // External string - no GC protection needed!
+    // Data is outside V8 heap and never moves.
     no_gc_debug_scope_[0] = '\0';  // Mark as uninitialized
     i::DisallowGarbageCollection dummy_no_gc;
     i::String::FlatContent flat_content = i_flat_str->GetFlatContent(dummy_no_gc);

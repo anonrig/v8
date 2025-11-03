@@ -644,20 +644,22 @@ class V8_EXPORT String : public Name {
    *
    * This is a zero-copy view that provides direct access to string data.
    *
-   * OPTIMIZATION: ValueView selectively avoids GC locks based on string type:
+   * OPTIMIZATION: ValueView avoids GC locks for external strings only.
    * - External strings: No GC lock (data is outside V8 heap, never moves)
-   * - Old generation strings: No GC lock (stable, rarely move)
-   * - Young generation strings: GC lock applied (can move during minor GC)
+   * - Heap strings: GC lock applied (can move during GC)
    *
-   * This means for external and old-generation strings (the common case), you can:
+   * For external strings (common in embedders), you can:
    * - Trigger garbage collection while ValueView is alive ✓
    * - Allocate new objects (ArrayBuffers, etc.) while using ValueView ✓
    * - Use ValueView without any GC pauses ✓
    *
-   * For young generation strings (the rare case), GC is temporarily blocked to
-   * prevent the string from moving. This is necessary for safety but is a
-   * significant improvement over the previous behavior that blocked GC for ALL
-   * strings regardless of type.
+   * For heap-allocated strings (both young and old generation), GC is
+   * temporarily blocked to prevent the string from moving. This is necessary
+   * because ValueView holds raw pointers to string data, which would become
+   * invalid if GC moves the string.
+   *
+   * This conservative approach ensures 100% safety while still providing
+   * significant benefits for embedders using external strings.
    *
    * V8 strings are either encoded as one-byte or two-bytes per character.
    */

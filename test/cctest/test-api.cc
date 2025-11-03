@@ -9463,7 +9463,9 @@ THREADED_TEST(ValueViewExternalString) {
 }
 
 THREADED_TEST(ValueViewOldGenerationString) {
-  // Test that ValueView works with old generation strings
+  // Test that ValueView works correctly with old generation strings
+  // Note: With the conservative approach, all heap strings (including old-gen)
+  // have GC protection applied for safety.
   LocalContext context;
   v8::Isolate* isolate = context.isolate();
   v8::HandleScope scope(isolate);
@@ -9483,18 +9485,13 @@ THREADED_TEST(ValueViewOldGenerationString) {
   // Verify string is in old generation
   CHECK(!i::HeapLayout::InYoungGeneration(*i_str));
 
-  // Create ValueView - this should NOT block GC for old-gen strings
+  // Create ValueView - GC protection is applied even for old-gen strings
+  // to avoid undefined behavior if major GC compaction occurs
   v8::String::ValueView value(isolate, str);
   CHECK(value.is_one_byte());
   CHECK_EQ(value.length(), 26);
   CHECK_EQ(value.data8()[0], 'o');
-
-  // We can trigger minor GC while ValueView is alive for old-gen strings
-  i::heap::InvokeMinorGC(CcTest::heap());
-
-  // ValueView should still be valid
-  CHECK_EQ(value.data8()[0], 'o');
-  CHECK_EQ(value.length(), 26);
+  CHECK_EQ(value.data8()[25], 't');
 }
 
 THREADED_TEST(ValueViewYoungGenerationString) {
@@ -9579,46 +9576,6 @@ THREADED_TEST(ValueViewAllowsAllocationForExternalStrings) {
   // ValueView is still valid after allocation
   CHECK_EQ(value.data16()[0], 0x1234);
   CHECK_EQ(value.length(), 9);
-}
-
-THREADED_TEST(ValueViewAllowsAllocationForOldGenStrings) {
-  // Test that we can allocate while ValueView is active on old-gen strings
-  LocalContext context;
-  v8::Isolate* isolate = context.isolate();
-  v8::HandleScope scope(isolate);
-
-  // Create and promote string to old generation
-  v8::Local<v8::String> str = v8_str("old generation string for allocation test");
-
-  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  i::DirectHandle<i::String> i_str = v8::Utils::OpenDirectHandle(*str);
-
-  // Force promotion to old generation
-  for (int i = 0; i < 3; i++) {
-    i::heap::InvokeMinorGC(CcTest::heap());
-  }
-
-  // Verify it's in old generation
-  CHECK(!i::HeapLayout::InYoungGeneration(*i_str));
-
-  // Create ValueView on old-gen string
-  v8::String::ValueView value(isolate, str);
-  CHECK(value.is_one_byte());
-  CHECK_EQ(value.data8()[0], 'o');
-
-  // NEW: We can allocate while ValueView is alive for old-gen strings!
-  v8::Local<v8::ArrayBuffer> buffer1 = v8::ArrayBuffer::New(isolate, 512);
-  CHECK(!buffer1.IsEmpty());
-  CHECK_EQ(buffer1->ByteLength(), 512);
-
-  // Can even allocate multiple times
-  v8::Local<v8::ArrayBuffer> buffer2 = v8::ArrayBuffer::New(isolate, 256);
-  CHECK(!buffer2.IsEmpty());
-  CHECK_EQ(buffer2->ByteLength(), 256);
-
-  // ValueView is still valid
-  CHECK_EQ(value.data8()[0], 'o');
-  CHECK(value.is_one_byte());
 }
 
 THREADED_TEST(ValueViewMultipleAccessesNoReflatten) {
