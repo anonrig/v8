@@ -9543,6 +9543,82 @@ THREADED_TEST(ValueViewInternalizedString) {
   CHECK_EQ(value.data8()[11], 'd');
 }
 
+THREADED_TEST(ValueViewAllowsAllocationForExternalStrings) {
+  // Test that we can allocate (e.g., create ArrayBuffer) while ValueView
+  // is active on an external string - this demonstrates the optimization!
+  LocalContext context;
+  v8::Isolate* isolate = context.isolate();
+  v8::HandleScope scope(isolate);
+
+  // Create an external string
+  uint16_t* data = new uint16_t[10];
+  for (int i = 0; i < 9; i++) {
+    data[i] = 0x1234 + i;
+  }
+  data[9] = 0;
+
+  v8::Local<v8::String> ext_str =
+      v8::String::NewExternalTwoByte(isolate, new TestResource(data))
+          .ToLocalChecked();
+  CHECK(ext_str->IsExternal());
+
+  // Create ValueView on external string
+  v8::String::ValueView value(isolate, ext_str);
+  CHECK(!value.is_one_byte());
+  CHECK_EQ(value.length(), 9);
+
+  // NEW: We can now allocate while ValueView is alive for external strings!
+  // This would FAIL with the old implementation that blocked all allocations
+  v8::Local<v8::ArrayBuffer> buffer =
+      v8::ArrayBuffer::New(isolate, 1024);
+  CHECK(!buffer.IsEmpty());
+  CHECK_EQ(buffer->ByteLength(), 1024);
+
+  // ValueView is still valid after allocation
+  CHECK_EQ(value.data16()[0], 0x1234);
+  CHECK_EQ(value.length(), 9);
+}
+
+THREADED_TEST(ValueViewAllowsAllocationForOldGenStrings) {
+  // Test that we can allocate while ValueView is active on old-gen strings
+  LocalContext context;
+  v8::Isolate* isolate = context.isolate();
+  v8::HandleScope scope(isolate);
+
+  // Create and promote string to old generation
+  v8::Local<v8::String> str = v8_str("old generation string for allocation test");
+
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  i::DirectHandle<i::String> i_str = v8::Utils::OpenDirectHandle(*str);
+
+  // Force promotion to old generation
+  for (int i = 0; i < 3; i++) {
+    i::heap::InvokeMinorGC(CcTest::heap());
+  }
+
+  // Verify it's in old generation
+  CHECK(!i::HeapLayout::InYoungGeneration(*i_str));
+
+  // Create ValueView on old-gen string
+  v8::String::ValueView value(isolate, str);
+  CHECK(value.is_one_byte());
+  CHECK_EQ(value.data8()[0], 'o');
+
+  // NEW: We can allocate while ValueView is alive for old-gen strings!
+  v8::Local<v8::ArrayBuffer> buffer1 = v8::ArrayBuffer::New(isolate, 512);
+  CHECK(!buffer1.IsEmpty());
+  CHECK_EQ(buffer1->ByteLength(), 512);
+
+  // Can even allocate multiple times
+  v8::Local<v8::ArrayBuffer> buffer2 = v8::ArrayBuffer::New(isolate, 256);
+  CHECK(!buffer2.IsEmpty());
+  CHECK_EQ(buffer2->ByteLength(), 256);
+
+  // ValueView is still valid
+  CHECK_EQ(value.data8()[0], 'o');
+  CHECK(value.is_one_byte());
+}
+
 THREADED_TEST(ToArrayIndex) {
   LocalContext context;
   v8::Isolate* isolate = context.isolate();
